@@ -1,0 +1,25 @@
+# Environment variables & secrets
+.env
+.env.*
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PostgreSQL local exports & dumps
+*.sql
+*.dump
+*.tar
+*.bak
+
+# Virtual environments
+venv/
+env/
+.env/
+
+# IDE & OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
