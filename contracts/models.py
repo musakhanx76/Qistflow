@@ -61,25 +61,20 @@ class InstallmentContract(models.Model):
     def calculate_financials(self):
         two_places = Decimal('0.01')
 
-         # 1. Markup is calculated on FULL Cash Price
+        # Markup & Monthly calculations
         markup_factor = self.markup_percentage / Decimal('100.0')
-        self.markup_amount = (self.product_cash_price * markup_factor).quantize(
-        two_places, rounding=ROUND_HALF_UP
+        self.financed_principal = self.product_cash_price - self.down_payment
+        self.markup_amount = (self.financed_principal * markup_factor).quantize(
+            two_places, rounding=ROUND_HALF_UP
+        )
+        self.total_financed_payable = self.financed_principal + self.markup_amount
+
+        self.monthly_installment = (self.total_financed_payable / Decimal(self.tenure_months)).quantize(
+            two_places, rounding=ROUND_HALF_UP
         )
 
-        # 2. Total contract value including markup (e.g., 38,000 + 7,600 = 45,600)
-        total_installment_price = self.product_cash_price + self.markup_amount
-
-        # 3. Financed balance is what remains after down payment (45,600 - 9,000 = 36,600)
-        self.total_financed_payable = total_installment_price - self.down_payment
-        self.financed_principal = self.product_cash_price - self.down_payment
-
-        # 4. Monthly installment = Remaining / Tenure (36,600 / 6 = 6,100)
-        self.monthly_installment = (self.total_financed_payable / Decimal(self.tenure_months)).quantize(
-        two_places, rounding=ROUND_HALF_UP
-       )
-
-        if not self.remaining_balance:
+        # FIX: Explicitly check for None or new instance, NEVER 'if not self.remaining_balance'
+        if self._state.adding or self.remaining_balance is None:
             self.remaining_balance = self.total_financed_payable
 
 
@@ -151,10 +146,13 @@ class InstallmentSchedule(models.Model):
 
 
 class Payment(models.Model):
-    """Logs cash collection against paper receipts and reconciles contract balances."""
-    contract = models.ForeignKey(InstallmentContract, on_delete=models.PROTECT, related_name='payments')
+    contract = models.ForeignKey(
+        'InstallmentContract', 
+        on_delete=models.PROTECT, 
+        related_name='payments'
+    )
     schedule = models.ForeignKey(
-        InstallmentSchedule, 
+        'InstallmentSchedule', 
         on_delete=models.PROTECT, 
         related_name='payments',
         null=True, 
@@ -162,9 +160,51 @@ class Payment(models.Model):
     )
     amount_paid = models.DecimalField(max_digits=12, decimal_places=2)
     payment_date = models.DateField(default=date.today)
-    manual_receipt_no = models.CharField(max_length=60, db_index=True)  # Paper slip reference
+    manual_receipt_no = models.CharField(max_length=60, db_index=True)
     collector_notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-payment_date', '-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['contract', 'manual_receipt_no'],
+                name='unique_contract_receipt_slip'
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+
+        # 1. Non-zero validation
+        if self.amount_paid is not None and self.amount_paid <= Decimal('0.00'):
+            raise ValidationError({'amount_paid': 'Payment amount must be greater than zero.'})
+
+        # 2. Overpayment protection
+        if self.contract and self.amount_paid is not None:
+            if self.amount_paid > self.contract.remaining_balance:
+                raise ValidationError({
+                    'amount_paid': f"Amount exceeds remaining contract balance (Rs. {self.contract.remaining_balance})."
+                })
+
+        # 3. Friendly duplicate receipt check
+        if self.contract and self.manual_receipt_no:
+            duplicate_query = Payment.objects.filter(
+                contract=self.contract,
+                manual_receipt_no=self.manual_receipt_no.strip()
+            )
+            if self.pk:
+                duplicate_query = duplicate_query.exclude(pk=self.pk)
+            if duplicate_query.exists():
+                raise ValidationError({
+                    'manual_receipt_no': f"Receipt slip '{self.manual_receipt_no}' has already been recorded for Contract {self.contract.contract_number}."
+                })
+
+    def delete(self, *args, **kwargs):
+        # Ledger Shield: Prevent silent out-of-sync balances
+        raise ValidationError(
+            "Ledger entries are immutable. Payments cannot be directly deleted as it corrupts schedule allocations."
+        )
 
     def __str__(self):
         return f"Slip {self.manual_receipt_no}: Paid {self.amount_paid} for {self.contract.contract_number}"
