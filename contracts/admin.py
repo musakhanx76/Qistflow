@@ -38,6 +38,21 @@ class InstallmentContractAdmin(admin.ModelAdmin):
         'remaining_balance'
     )
     inlines = [InstallmentScheduleInline, PaymentInline]
+    
+    def get_readonly_fields(self, request, obj=None):
+        if obj:  # Editing an existing contract
+            return self.readonly_fields + (
+                'shop',
+                'customer',
+                'serialized_item',
+                'contract_number',
+                'tenure_months',
+                'product_cash_price',
+                'down_payment',
+                'markup_percentage',
+                'start_date',
+            )
+        return self.readonly_fields
 
 
 @admin.register(InstallmentSchedule)

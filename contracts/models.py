@@ -59,23 +59,25 @@ class InstallmentContract(models.Model):
                 raise ValidationError("The selected serialized unit is not in stock.")
 
     def calculate_financials(self):
-        two_places = Decimal('0.01')
+        # Only calculate on the very first creation; never mutate an existing contract!
+        if not self._state.adding and self.pk:
+            return
 
-        # Markup & Monthly calculations
+        two_places = Decimal('0.01')
         markup_factor = self.markup_percentage / Decimal('100.0')
         self.financed_principal = self.product_cash_price - self.down_payment
         self.markup_amount = (self.financed_principal * markup_factor).quantize(
             two_places, rounding=ROUND_HALF_UP
         )
         self.total_financed_payable = self.financed_principal + self.markup_amount
-
         self.monthly_installment = (self.total_financed_payable / Decimal(self.tenure_months)).quantize(
             two_places, rounding=ROUND_HALF_UP
         )
 
-        # FIX: Explicitly check for None or new instance, NEVER 'if not self.remaining_balance'
-        if self._state.adding or self.remaining_balance is None:
+        if self.remaining_balance is None:
             self.remaining_balance = self.total_financed_payable
+
+    
 
 
     @transaction.atomic
@@ -118,6 +120,19 @@ class InstallmentContract(models.Model):
 
     def __str__(self):
         return f"{self.contract_number} - {self.customer.full_name} ({self.get_tenure_months_display()})"
+
+
+    @property
+    def true_monthly_installment(self):
+        # Fetch the very first month's schedule row
+        first_row = self.schedules.filter(installment_number=1).first()
+    
+        if first_row:
+            # The schedule is the boss: return whatever Month 1 actually expects
+            return first_row.expected_amount
+    
+        # Fallback only if schedules haven't been generated yet
+        return self.monthly_installment
 
 
 class InstallmentSchedule(models.Model):
